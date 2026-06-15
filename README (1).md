@@ -1,150 +1,87 @@
 # FitFindr
 
-An AI thrift shopping agent that takes a natural language query, searches a secondhand listings dataset, suggests outfits using your existing wardrobe, and writes a shareable Instagram caption — all in one shot.
-
----
+An AI agent that helps you find secondhand clothes and style them. You type what you're looking for, it finds a listing, suggests an outfit, and writes your caption.
 
 ## Setup
 
-```bash
-# 1. Clone your fork
-git clone <your-fork-url>
-cd fitfindr
-
-# 2. Create and activate a virtual environment
-python -m venv .venv
-source .venv/bin/activate        # Mac/Linux
-.venv\Scripts\activate           # Windows
-
-# 3. Install dependencies
+```
 pip install -r requirements.txt
-
-# 4. Add your Groq API key
-copy .env.example .env
-# Edit .env: GROQ_API_KEY=your_key_here
-# Free key at https://console.groq.com
-
-# 5. Run the app
-python app.py
-# Open http://localhost:7860
 ```
 
----
+Add your Groq API key to a `.env` file:
+```
+GROQ_API_KEY=your_key_here
+```
 
-## Tool Inventory
+Run it:
+```
+python app.py
+```
 
-### `search_listings(description, size, max_price)`
-
-| Parameter | Type | Purpose |
-|-----------|------|---------|
-| `description` | `str` | Natural language keywords describing the item (e.g. "vintage graphic tee") |
-| `size` | `str \| None` | Clothing size to filter by (e.g. "M"). `None` = no filter |
-| `max_price` | `float \| None` | Maximum price in USD. `None` = no filter |
-
-**Returns:** `list[dict]` — matching listings sorted by relevance. Each dict contains `id`, `title`, `description`, `category`, `style_tags` (list), `size`, `condition`, `price` (float), `colors` (list), `brand`, `platform`. Returns `[]` if nothing matches — never raises an exception.
-
-**Purpose:** Filters the mock secondhand dataset by tokenizing the description and scoring each listing by keyword overlap, then applying size and price filters.
+Then open http://localhost:7860
 
 ---
 
-### `suggest_outfit(new_item, wardrobe)`
+## Tools
 
-| Parameter | Type | Purpose |
-|-----------|------|---------|
-| `new_item` | `dict` | A listing dict from `search_listings` — the item to style |
-| `wardrobe` | `dict` | Dict with `items` (list of wardrobe pieces) and `style_notes` (str). May be empty. |
+### search_listings(description, size, max_price)
 
-**Returns:** `str` — 1–2 outfit suggestions with a specific styling tip (~130 words). Returns an `"Error: ..."` string if `new_item` is empty or the LLM call fails. An empty wardrobe is handled gracefully — general styling advice is returned instead of an error.
+- description (str): what you're looking for, like "vintage graphic tee"
+- size (str or None): size filter like "M", or None to skip
+- max_price (float or None): price ceiling like 30.0, or None to skip
 
-**Purpose:** Calls the Groq LLM (llama-3.3-70b-versatile) to suggest outfits. Uses a different prompt depending on whether the wardrobe is populated or empty.
+Returns a list of matching listing dicts sorted by relevance. Each one has id, title, description, category, style_tags, size, condition, price, colors, brand, and platform. Returns an empty list if nothing matches, never crashes.
 
----
+### suggest_outfit(new_item, wardrobe)
 
-### `create_fit_card(outfit, new_item)`
+- new_item (dict): the listing you want to style
+- wardrobe (dict): has an items list and style_notes string, can be empty
 
-| Parameter | Type | Purpose |
-|-----------|------|---------|
-| `outfit` | `str` | The outfit suggestion string from `suggest_outfit` |
-| `new_item` | `dict` | The listing dict — item name, price, and platform used in the caption |
+Returns a string with 1-2 outfit ideas and a styling tip. If the wardrobe is empty it gives general advice instead of crashing. Returns an error string if new_item is missing.
 
-**Returns:** `str` — a 2–3 sentence lowercase Instagram-style caption with 1–2 emojis, no hashtags, mentioning the item name, price, and platform once each. Returns an `"Error: ..."` string if outfit is empty or the LLM fails.
+### create_fit_card(outfit, new_item)
 
-**Purpose:** Generates a shareable caption at LLM temperature 1.1 so each call produces a distinct, human-sounding result.
+- outfit (str): the suggestion from suggest_outfit
+- new_item (dict): the listing, used for the item name, price, and platform
 
----
-
-## How the Planning Loop Works
-
-The loop runs inside `run_agent()` in `agent.py`. It does not call all three tools unconditionally — it checks the result of each step before deciding whether to continue.
-
-First, `_parse_query()` uses regex to extract a description, size, and max price from the raw query. Then `search_listings()` is called. **If it returns an empty list**, the agent sets `session["error"]` with a message naming the exact filters applied and three specific suggestions for broadening the search, then returns early — `suggest_outfit` is never called with empty input.
-
-If results are found, the top result is stored as `selected_item` and passed into `suggest_outfit()`. **If suggest_outfit returns a string starting with `"Error:"`**, the agent sets `session["error"]` and returns early — `create_fit_card` is never called.
-
-If suggest_outfit succeeds, its output goes directly into `create_fit_card()`. The result is stored and the completed session is returned.
-
-The key decision point is after `search_listings`: a query that finds nothing exits immediately with a helpful message, while a query that finds results continues through all three tools.
+Returns a short lowercase Instagram caption with 1-2 emojis and no hashtags. Returns an error string if outfit is empty.
 
 ---
 
-## State Management
+## How the planning loop works
 
-All state is stored in a session dict that gets initialized at the start of every run. Each tool writes its result into the dict, and the next tool reads from it — no re-entry needed.
+The agent parses your query to pull out a description, size, and price. Then it calls search_listings. If that comes back empty it stops and tells you what to try differently — it does not keep going with nothing. If results come back it picks the top one and passes it to suggest_outfit. If suggest_outfit returns an error string it stops there too. Otherwise it passes the outfit into create_fit_card and returns everything.
 
-After parsing the query, the description, size, and max price go into `parsed`. When `search_listings` runs, its results are saved in `search_results` and the top item is pulled out into `selected_item`. That same item object gets passed directly into `suggest_outfit` and then `create_fit_card` — no copying, no reformatting. The outfit suggestion gets saved as `outfit_suggestion` and flows straight into `create_fit_card`. If anything fails at any step, an `error` key gets set and the session returns early.
-
-| Key | Set when | Used by |
-|-----|----------|---------|
-| `parsed` | After `_parse_query()` | Arguments to `search_listings` |
-| `search_results` | After `search_listings` | Error message + top result selection |
-| `selected_item` | `= results[0]` | `suggest_outfit`, `create_fit_card` |
-| `outfit_suggestion` | After `suggest_outfit` | `create_fit_card` |
-| `fit_card` | After `create_fit_card` | UI fit card panel |
-| `error` | On any failure | Early return + UI status display |
+So the agent only moves to the next tool if the previous one worked. It never calls all three unconditionally.
 
 ---
 
-## Error Handling
+## State management
 
-### `search_listings` — no results
-**Failure mode:** Returns `[]` when no listings match the query, size, and price filters.
-
-**Agent response:** Sets `session["error"]` with a specific message naming the filters that were applied and three concrete suggestions. Example from testing:
-
-Running `search_listings("designer ballgown", size="XXS", max_price=5)` returns `[]`. The agent responds: *"No listings found for 'designer ballgown' with size XXS and under $5. Try broadening your search: remove the size filter, raise the price limit, or use simpler keywords."* The outfit and fit card panels stay blank — `suggest_outfit` is never called.
+Everything lives in one session dict that gets created at the start of each run. The parsed query goes in first, then search results, then the selected item, then the outfit suggestion, then the fit card. Each tool just reads from and writes to that dict so nothing has to be re-entered between steps. The selected_item that comes out of search_listings is the exact same object that goes into suggest_outfit and create_fit_card.
 
 ---
 
-### `suggest_outfit` — empty wardrobe
-**Failure mode:** `wardrobe["items"]` is an empty list.
+## Error handling
 
-**Agent response:** Handled gracefully — the function switches to a different prompt that asks the LLM for general styling advice instead of wardrobe-specific combinations. No error is returned and the agent continues to `create_fit_card` normally. Example from testing:
+**search_listings** — if nothing matches, returns []. The agent sets an error message that names the filters it tried (like "size M and under $30") and gives three specific suggestions: remove the size filter, raise the price, or use simpler keywords. Tested by searching "designer ballgown size XXS under $5" which returns empty and shows that message without calling the other tools.
 
-Calling `suggest_outfit(item, get_empty_wardrobe())` returns: *"Without a wardrobe on file, here are some directions: pair this faded band tee with wide-leg or straight-leg denim for a 90s grunge feel. Chunky boots or platform sneakers complete the look."*
+**suggest_outfit** — if the wardrobe is empty it switches to a general styling prompt instead of erroring. Tested with get_empty_wardrobe() and it returned real advice about what kinds of pieces pair well. If new_item is an empty dict it returns an error string immediately without calling the LLM.
 
----
-
-### `create_fit_card` — empty outfit input
-**Failure mode:** `outfit` is an empty string or whitespace only.
-
-**Agent response:** Returns `"Error: No outfit description provided to create_fit_card. Cannot generate a caption without outfit details."` — no exception raised. The agent sets `session["error"]` and surfaces it in the status panel.
-
-Example from testing: `create_fit_card("", item)` returns the error string immediately without making an LLM call.
+**create_fit_card** — if outfit is empty or just whitespace it returns an error string right away without calling the LLM. Tested by passing an empty string and confirmed it returns the error message instead of crashing.
 
 ---
 
-## Spec Reflection
+## Spec reflection
 
-**One way the spec helped:** Writing the planning loop as explicit conditional pseudocode in `planning.md` before touching any code made the implementation almost line-for-line translation. The "IF results == [] → early return" branch was clearly defined before I wrote it, so I didn't accidentally call `suggest_outfit` with empty input.
+The planning.md spec helped a lot because writing out the conditional logic before coding meant the loop almost wrote itself. Having "if results == [] return early" written down meant I didn't have to figure that out mid-implementation.
 
-**One way implementation diverged from the spec:** The original spec described `_parse_query()` as stripping size and price patterns from the description, but the first implementation left filler phrases like "I'm looking for" in the description, which hurt keyword matching for full-sentence queries. I added a second cleanup pass to handle this — it wasn't in the original spec but became necessary after testing with natural conversational queries.
+One thing that diverged: the query parser in the spec was supposed to clean up the description but it left in filler words like "I'm looking for" which hurt the keyword matching. I added an extra cleanup step that wasn't in the original plan after noticing full sentence queries returned fewer results than short keyword ones.
 
 ---
 
-## AI Usage
+## AI usage
 
-### Instance 1: `search_listings` implementation
-I gave Claude the Tool 1 spec block from `planning.md` — the input types, return value description, and failure mode — along with the `load_listings()` function signature. It generated a working function but used `item['size'] == size` for size comparison, which was case-sensitive and failed when the user typed "m" instead of "M". I revised the comparison to use `.upper()` on both sides. I also changed the token splitting from a simple `split(" ")` to `re.split(r"[\s\-,/]+", description)` so hyphenated tags like "wide-leg" would match the query "wide leg".
+**Instance 1:** I gave Claude the Tool 1 spec from planning.md and asked it to implement search_listings using load_listings(). It generated a working function but the size comparison was case-sensitive so "m" wouldn't match "M". I fixed it by adding .upper() to both sides. I also changed the token splitting to handle hyphens so "wide-leg" in the tags would match "wide leg" in the query.
 
-### Instance 2: Planning loop in `run_agent()`
-I gave Claude the full architecture diagram from `planning.md` plus the Planning Loop and State Management sections. It generated `run_agent()` with the correct session dict structure and also produced `_parse_query()` which I had planned to write separately. However, the generated loop only checked `if not outfit` after calling `suggest_outfit` — this would pass through an error string that still had content. I revised it to check `outfit.startswith("Error:")` instead, which correctly catches API failures that return a non-empty error message.
+**Instance 2:** I gave Claude the architecture diagram and planning loop section and asked it to implement run_agent(). It got the structure right but the error check after suggest_outfit only checked if the string was empty. That would miss API errors that return a non-empty error message. I changed it to check if the string starts with "Error:" instead.
